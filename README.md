@@ -5,7 +5,7 @@ A canvas-based node graph editor using [@chenglou/pretext](https://github.com/ch
 ## Quick start
 
 ```bash
-pnpm install && pnpm dev
+bun install && bun dev
 ```
 
 ## Architecture
