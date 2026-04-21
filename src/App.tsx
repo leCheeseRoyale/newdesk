@@ -3,9 +3,11 @@ import { useStore } from './store'
 import { CanvasLayer } from './CanvasLayer'
 import { OverlayLayer } from './OverlayLayer'
 import { getNodeLayout, getPortWorldPos } from './pretextLayout'
-import { PORT_RADIUS, GRID_SIZE, NODE_WIDTH } from './types'
+import { PORT_RADIUS, GRID_SIZE } from './types'
 import { invalidateBitmapCache, renderHeight } from './CanvasLayer'
-import type { NodeData, EdgeData } from './types'
+import { serializeGraph } from './serializer'
+import { createNodePhysics, initChaos, initRestore, activeChaos, setActiveChaos } from './physics'
+import type { NodeData, EdgeData, NodeLayout } from './types'
 
 type ResizeMode = 'horizontal' | 'vertical' | 'diagonal'
 
@@ -163,6 +165,75 @@ export function App() {
         e.preventDefault()
         spaceHeld.current = true
       }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+        e.preventDefault()
+        if (e.shiftKey) {
+          useStore.getState().redo()
+        } else {
+          useStore.getState().undo()
+        }
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'y') {
+        e.preventDefault()
+        useStore.getState().redo()
+      }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC') {
+        const st = useStore.getState()
+        if (st.selectedNodeId && !st.editingParam) {
+          e.preventDefault()
+          navigator.clipboard.writeText(st.nodes[st.selectedNodeId].source)
+        }
+      }
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV') {
+        const st = useStore.getState()
+        if (!st.editingParam && !st.editingNodeId) {
+          e.preventDefault()
+          navigator.clipboard.readText().then((text) => {
+            if (!text) return
+            const vp = useStore.getState().viewport
+            const cx = (-vp.x + window.innerWidth / 2) / vp.zoom + (Math.random() - 0.5) * 60
+            const cy = (-vp.y + window.innerHeight / 2) / vp.zoom + (Math.random() - 0.5) * 60
+            useStore.getState().addNode(text, cx, cy)
+          })
+        }
+      }
+      if (e.code === 'KeyJ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault()
+        if (activeChaos && activeChaos.mode === 'chaos') {
+          initRestore(activeChaos)
+        } else if (!activeChaos || activeChaos.mode === 'idle') {
+          const store = useStore.getState()
+          if (store.editingParam || store.editingNodeId) return
+          const layouts = new Map<string, NodeLayout>()
+          for (const id in store.nodes) {
+            layouts.set(id, getNodeLayout(store.nodes[id]))
+          }
+          const vp = store.viewport
+          const rect = containerRef.current?.getBoundingClientRect()
+          const vpW = rect?.width ?? window.innerWidth
+          const vpH = rect?.height ?? window.innerHeight
+          const bounds = {
+            left: -vp.x / vp.zoom,
+            top: -vp.y / vp.zoom,
+            right: (-vp.x + vpW) / vp.zoom,
+            bottom: (-vp.y + vpH) / vp.zoom,
+          }
+          const physics = createNodePhysics(store.nodes, layouts, bounds)
+          initChaos(physics)
+          setActiveChaos(physics)
+        }
+      }
+      if (e.key === 's' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault()
+        const st = useStore.getState()
+        const serialized = serializeGraph(st.nodes, st.edges)
+        localStorage.setItem('newdesk-graph', serialized)
+        if (e.shiftKey) {
+          const hash = btoa(unescape(encodeURIComponent(serialized)))
+          const url = `${window.location.origin}${window.location.pathname}#${hash}`
+          navigator.clipboard.writeText(url)
+        }
+      }
     }
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code === 'Space') {
@@ -284,12 +355,12 @@ export function App() {
       const node = st.nodes[resizingNodeId.current]
       if (node) {
         const layout = getNodeLayout(node)
-        const currentWidth = node.width ?? NODE_WIDTH
+        const currentWidth = layout.width
         const rightEdge = node.x + currentWidth
         const minW = GRID_SIZE * 5
         const mode = resizeMode.current
 
-        invalidateBitmapCache(node)
+        invalidateBitmapCache(node, layout)
 
         if (mode === 'horizontal' || mode === 'diagonal') {
           const snappedX = Math.round(wx / GRID_SIZE) * GRID_SIZE
@@ -364,6 +435,7 @@ export function App() {
             portHit.nodeId,
             portHit.portId,
           )
+          useStore.getState().pushHistory()
         }
       }
       store.setDraggingEdge(null)
@@ -373,6 +445,7 @@ export function App() {
 
     // End resize
     if (resizingNodeId.current) {
+      useStore.getState().pushHistory()
       resizingNodeId.current = null
       resizeMode.current = null
       return
@@ -380,6 +453,7 @@ export function App() {
 
     // End node drag
     if (dragNodeId.current) {
+      useStore.getState().pushHistory()
       dragNodeId.current = null
       return
     }
@@ -395,6 +469,7 @@ export function App() {
       const edgeHit = hitTestEdge(wx, wy, store.edges, store.nodes)
       if (edgeHit) {
         store.removeEdge(edgeHit)
+        useStore.getState().pushHistory()
       }
     }
   }, [])
@@ -418,6 +493,13 @@ export function App() {
     const regionHit = hitTestEditableRegion(wx, wy, store.nodes)
     if (regionHit) {
       store.setEditingParam({ nodeId: regionHit.nodeId, paramName: regionHit.paramName })
+      return
+    }
+
+    const nodeHit = hitTestNode(wx, wy, store.nodes)
+    if (nodeHit) {
+      store.setEditingNode(nodeHit)
+      return
     }
   }, [getScreenCoords])
 

@@ -1,19 +1,19 @@
 import { useEffect, useRef } from 'react'
 import { useStore } from './store'
 import { getNodeLayout, getPortWorldPos } from './pretextLayout'
+import { activeChaos, stepNodePhysics, readPositions, setActiveChaos } from './physics'
 import {
   NODE_FONT,
   NODE_HEADER_FONT,
   NODE_PADDING_X,
-  NODE_WIDTH,
   PORT_RADIUS,
   GRID_SIZE,
 } from './types'
 import type { NodeData, NodeLayout } from './types'
 
+export const perfStats = { fps: 0, frameMs: 0, nodeCount: 0 }
+
 // ── Bitmap cache ────────────────────────────────────────────────
-// Each non-active node is rendered once to an offscreen canvas,
-// then stamped with a single drawImage call each frame.
 
 const CACHE_SCALE = 2
 const PAD = PORT_RADIUS + 2
@@ -30,12 +30,12 @@ export function renderHeight(node: NodeData, layout: NodeLayout): number {
   return Math.max(layout.height, node.minHeight ?? 0)
 }
 
-function bitmapKey(node: NodeData): string {
-  return `${node.width ?? NODE_WIDTH}::${node.minHeight ?? 0}::${node.source}`
+function bitmapKey(node: NodeData, layout: NodeLayout): string {
+  return `${layout.width}::${node.minHeight ?? 0}::${node.source}`
 }
 
 function getOrCreateBitmap(node: NodeData, layout: NodeLayout): CachedBitmap {
-  const key = bitmapKey(node)
+  const key = bitmapKey(node, layout)
   const rh = renderHeight(node, layout)
   const cached = bitmapCache.get(key)
   if (cached && cached.w === layout.width && cached.h === rh) return cached
@@ -56,8 +56,8 @@ function getOrCreateBitmap(node: NodeData, layout: NodeLayout): CachedBitmap {
   return entry
 }
 
-export function invalidateBitmapCache(node: NodeData) {
-  bitmapCache.delete(bitmapKey(node))
+export function invalidateBitmapCache(node: NodeData, layout: NodeLayout) {
+  bitmapCache.delete(bitmapKey(node, layout))
 }
 
 // ── Drawing helpers ─────────────────────────────────────────────
@@ -79,13 +79,12 @@ function drawRoundedRect(
   ctx.closePath()
 }
 
-function drawNodeInner(
+function drawNodeFrame(
   ctx: CanvasRenderingContext2D,
   nx: number, ny: number,
   layout: NodeLayout,
   rh: number,
   isSelected: boolean,
-  editingParamName: string | null,
 ) {
   const w = layout.width
   const h = rh
@@ -121,15 +120,47 @@ function drawNodeInner(
 
   const contentWidth = w - 2 * NODE_PADDING_X
   for (const dl of layout.displayLines) {
-    if (dl.isDivider) {
-      ctx.beginPath()
-      ctx.moveTo(nx + NODE_PADDING_X, ny + dl.y + dl.lineHeight / 2)
-      ctx.lineTo(nx + NODE_PADDING_X + contentWidth, ny + dl.y + dl.lineHeight / 2)
-      ctx.strokeStyle = '#333'
-      ctx.lineWidth = 1
-      ctx.stroke()
-      continue
-    }
+    if (!dl.isDivider) continue
+    ctx.beginPath()
+    ctx.moveTo(nx + NODE_PADDING_X, ny + dl.y + dl.lineHeight / 2)
+    ctx.lineTo(nx + NODE_PADDING_X + contentWidth, ny + dl.y + dl.lineHeight / 2)
+    ctx.strokeStyle = '#333'
+    ctx.lineWidth = 1
+    ctx.stroke()
+  }
+
+  for (const port of layout.ports) {
+    ctx.beginPath()
+    ctx.arc(nx + port.x, ny + port.y, PORT_RADIUS, 0, Math.PI * 2)
+    ctx.fillStyle = port.type === 'output' ? '#4a6cf7' : '#2ecc71'
+    ctx.fill()
+  }
+
+  ctx.fillStyle = '#555'
+  const bx = nx + 4
+  const by = ny + h - 4
+  ctx.fillRect(bx, by, 2, 2)
+  ctx.fillRect(bx + 4, by, 2, 2)
+  ctx.fillRect(bx + 8, by, 2, 2)
+  ctx.fillRect(bx, by - 4, 2, 2)
+  ctx.fillRect(bx, by - 8, 2, 2)
+}
+
+function drawNodeInner(
+  ctx: CanvasRenderingContext2D,
+  nx: number, ny: number,
+  layout: NodeLayout,
+  rh: number,
+  isSelected: boolean,
+  editingParamName: string | null,
+  skipAllText: boolean = false,
+) {
+  drawNodeFrame(ctx, nx, ny, layout, rh, isSelected)
+
+  if (skipAllText) return
+
+  for (const dl of layout.displayLines) {
+    if (dl.isDivider) continue
 
     if (editingParamName) {
       const inEdit = layout.editableRegions.some(
@@ -144,43 +175,27 @@ function drawNodeInner(
     ctx.textBaseline = 'alphabetic'
     ctx.fillText(dl.text, nx + NODE_PADDING_X, ny + dl.y + dl.lineHeight * 0.78)
   }
-
-  for (const port of layout.ports) {
-    ctx.beginPath()
-    ctx.arc(nx + port.x, ny + port.y, PORT_RADIUS, 0, Math.PI * 2)
-    ctx.fillStyle = port.type === 'output' ? '#4a6cf7' : '#2ecc71'
-    ctx.fill()
-  }
-
-  // Resize grip — L-shaped dots at bottom-left corner
-  ctx.fillStyle = '#555'
-  const bx = nx + 4
-  const by = ny + h - 4
-  ctx.fillRect(bx, by, 2, 2)
-  ctx.fillRect(bx + 4, by, 2, 2)
-  ctx.fillRect(bx + 8, by, 2, 2)
-  ctx.fillRect(bx, by - 4, 2, 2)
-  ctx.fillRect(bx, by - 8, 2, 2)
 }
 
-function drawEdge(
+function addEdgePath(
   ctx: CanvasRenderingContext2D,
   fromX: number, fromY: number,
   toX: number, toY: number,
-  dashed: boolean,
 ) {
   const dx = Math.min(Math.abs(toX - fromX) * 0.5, 100)
-  ctx.beginPath()
   ctx.moveTo(fromX, fromY)
   ctx.bezierCurveTo(fromX + dx, fromY, toX - dx, toY, toX, toY)
+}
 
-  if (dashed) {
-    ctx.setLineDash([6, 4])
-    ctx.strokeStyle = '#4a6cf7aa'
-  } else {
-    ctx.setLineDash([])
-    ctx.strokeStyle = '#4a6cf755'
-  }
+function drawDashedEdge(
+  ctx: CanvasRenderingContext2D,
+  fromX: number, fromY: number,
+  toX: number, toY: number,
+) {
+  ctx.beginPath()
+  addEdgePath(ctx, fromX, fromY, toX, toY)
+  ctx.setLineDash([6, 4])
+  ctx.strokeStyle = '#4a6cf7aa'
   ctx.lineWidth = 2
   ctx.stroke()
   ctx.setLineDash([])
@@ -198,11 +213,13 @@ function drawGrid(
 
   const startX = Math.floor(worldLeft / step) * step
   const startY = Math.floor(worldTop / step) * step
+  ctx.beginPath()
   for (let gx = startX; gx <= worldRight; gx += step) {
     for (let gy = startY; gy <= worldBottom; gy += step) {
-      ctx.fillRect(gx - 1, gy - 1, 2, 2)
+      ctx.rect(gx - 1, gy - 1, 2, 2)
     }
   }
+  ctx.fill()
 }
 
 // ── Component ───────────────────────────────────────────────────
@@ -213,7 +230,7 @@ export function CanvasLayer() {
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const ctx = canvas.getContext('2d')
+    const ctx = canvas.getContext('2d', { alpha: false })
     if (!ctx) return
 
     let rafId = 0
@@ -236,13 +253,19 @@ export function CanvasLayer() {
     const parent = canvas.parentElement
     if (parent) ro.observe(parent)
 
+    let frameMsAccum = 0
+    let frameCount = 0
+    let lastPerfUpdate = performance.now()
+
     function frame() {
       if (!canvas || !ctx) return
+      const frameStart = performance.now()
       const state = useStore.getState()
       const vp = state.viewport
 
       ctx.setTransform(1, 0, 0, 1, 0, 0)
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.fillStyle = '#0a0a0f'
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
       ctx.setTransform(dpr * vp.zoom, 0, 0, dpr * vp.zoom, dpr * vp.x, dpr * vp.y)
 
       const worldLeft = -vp.x / vp.zoom
@@ -253,37 +276,76 @@ export function CanvasLayer() {
       drawGrid(ctx, worldLeft, worldTop, worldRight, worldBottom, vp.zoom)
 
       const nodes = state.nodes
+      const editingNodeId = state.editingNodeId
+
+      // Step chaos physics if active (zero store writes)
+      const chaos = activeChaos
+      if (chaos && chaos.mode !== 'idle') {
+        const intensity = state.chaosIntensity
+        const active = stepNodePhysics(chaos, intensity)
+        if (!active) {
+          useStore.getState().setNodePositions(readPositions(chaos))
+          setActiveChaos(null)
+        }
+      }
+
+      // Build position overrides from physics
+      const posOver = new Map<string, { x: number; y: number }>()
+      if (chaos && chaos.mode !== 'idle') {
+        for (let i = 0; i < chaos.count; i++) {
+          posOver.set(chaos.ids[i], { x: chaos.posX[i], y: chaos.posY[i] })
+        }
+      }
+
+      // Edges — use overridden positions during chaos
+      ctx.beginPath()
       for (const edge of state.edges) {
         const fromNode = nodes[edge.fromNode]
         const toNode = nodes[edge.toNode]
         if (!fromNode || !toNode) continue
-        const from = getPortWorldPos(fromNode, edge.fromPort)
-        const to = getPortWorldPos(toNode, edge.toPort)
-        if (!from || !to) continue
-        drawEdge(ctx, from.x, from.y, to.x, to.y, false)
+        const fromLayout = getNodeLayout(fromNode)
+        const toLayout = getNodeLayout(toNode)
+        const fromPort = fromLayout.ports.find(p => p.portId === edge.fromPort)
+        const toPort = toLayout.ports.find(p => p.portId === edge.toPort)
+        if (!fromPort || !toPort) continue
+        const fp = posOver.get(edge.fromNode)
+        const tp = posOver.get(edge.toNode)
+        const fx = (fp?.x ?? fromNode.x) + fromPort.x
+        const fy = (fp?.y ?? fromNode.y) + fromPort.y
+        const tx = (tp?.x ?? toNode.x) + toPort.x
+        const ty = (tp?.y ?? toNode.y) + toPort.y
+        addEdgePath(ctx, fx, fy, tx, ty)
       }
+      ctx.strokeStyle = '#4a6cf755'
+      ctx.lineWidth = 2
+      ctx.stroke()
 
+      // Nodes
       for (const nodeId of Object.keys(nodes)) {
         const node = nodes[nodeId]
         const layout = getNodeLayout(node)
         const rh = renderHeight(node, layout)
+        const po = posOver.get(nodeId)
+        const nx = po?.x ?? node.x
+        const ny = po?.y ?? node.y
 
         if (
-          node.x + layout.width < worldLeft || node.x > worldRight ||
-          node.y + rh < worldTop || node.y > worldBottom
+          nx + layout.width < worldLeft || nx > worldRight ||
+          ny + rh < worldTop || ny > worldBottom
         ) continue
 
         const isSelected = state.selectedNodeId === nodeId
         const isEditing = state.editingParam?.nodeId === nodeId
+        const isEditingNode = editingNodeId === nodeId
 
-        if (isSelected || isEditing) {
+        if (isSelected || isEditing || isEditingNode || po) {
           const editParamName = isEditing ? state.editingParam!.paramName : null
-          drawNodeInner(ctx, node.x, node.y, layout, rh, isSelected, editParamName)
+          drawNodeInner(ctx, nx, ny, layout, rh, isSelected, editParamName, isEditingNode)
         } else {
           const bmp = getOrCreateBitmap(node, layout)
           ctx.drawImage(
             bmp.canvas,
-            node.x - PAD, node.y - PAD,
+            nx - PAD, ny - PAD,
             layout.width + PAD * 2, rh + PAD * 2,
           )
         }
@@ -294,8 +356,21 @@ export function CanvasLayer() {
         const fromNode = nodes[de.fromNode]
         if (fromNode) {
           const from = getPortWorldPos(fromNode, de.fromPort)
-          if (from) drawEdge(ctx, from.x, from.y, de.wx, de.wy, true)
+          if (from) drawDashedEdge(ctx, from.x, from.y, de.wx, de.wy)
         }
+      }
+
+      frameMsAccum += performance.now() - frameStart
+      frameCount++
+      const now = performance.now()
+      if (now - lastPerfUpdate > 500) {
+        const elapsed = now - lastPerfUpdate
+        perfStats.fps = Math.round((frameCount / elapsed) * 1000)
+        perfStats.frameMs = +(frameMsAccum / frameCount).toFixed(2)
+        perfStats.nodeCount = Object.keys(nodes).length
+        frameMsAccum = 0
+        frameCount = 0
+        lastPerfUpdate = now
       }
 
       rafId = requestAnimationFrame(frame)

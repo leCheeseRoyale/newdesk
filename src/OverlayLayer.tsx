@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useStore } from './store'
-import { NODE_FONT } from './types'
-import { getNodeLayout, invalidateLayout, runBenchmark } from './pretextLayout'
-import type { BenchmarkResult } from './pretextLayout'
+import { NODE_FONT, NODE_PADDING_X, NODE_PADDING_Y, NODE_LINE_HEIGHT } from './types'
+import { getNodeLayout, invalidateLayout } from './pretextLayout'
+import { renderHeight, perfStats } from './CanvasLayer'
 import { updateParamInSource } from './nodeParser'
 
 function ParamTextarea() {
@@ -33,6 +33,7 @@ function ParamTextarea() {
       invalidateLayout(editingParam.nodeId, newSource)
     }
     store.setEditingParam(null)
+    store.pushHistory()
   }
 
   return (
@@ -73,47 +74,114 @@ function ParamTextarea() {
   )
 }
 
-function BenchmarkPanel({ result }: { result: BenchmarkResult | null }) {
-  if (!result) return null
+function NodeSourceTextarea() {
+  const editingNodeId = useStore(s => s.editingNodeId)
+  const nodes = useStore(s => s.nodes)
 
-  const barMax = Math.max(result.domMs, result.pretextTotalMs)
+  if (!editingNodeId) return null
+
+  const node = nodes[editingNodeId]
+  if (!node) return null
+
+  const layout = getNodeLayout(node)
+  const rh = renderHeight(node, layout)
+
+  const left = node.x + NODE_PADDING_X
+  const top = node.y + NODE_PADDING_Y
+  const width = layout.width - 2 * NODE_PADDING_X
+  const height = rh - 2 * NODE_PADDING_Y
 
   return (
-    <div style={{ marginTop: 4, background: '#1a1a2e', borderRadius: 4, padding: 10, border: '1px solid #2a2a4a' }}>
+    <textarea
+      defaultValue={node.source}
+      autoFocus
+      onFocus={e => e.currentTarget.select()}
+      onChange={e => {
+        const store = useStore.getState()
+        store.updateNodeSource(editingNodeId, e.target.value)
+        invalidateLayout(editingNodeId, e.target.value)
+      }}
+      onBlur={() => {
+        useStore.getState().setEditingNode(null)
+      }}
+      onKeyDown={e => {
+        if (e.key === 'Escape') e.currentTarget.blur()
+      }}
+      style={{
+        position: 'absolute',
+        left,
+        top,
+        width,
+        height,
+        font: NODE_FONT,
+        background: 'transparent',
+        color: '#e0e0e0',
+        border: 'none',
+        outline: 'none',
+        resize: 'none',
+        padding: 0,
+        margin: 0,
+        overflow: 'hidden',
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        lineHeight: NODE_LINE_HEIGHT + 'px',
+        zIndex: 1,
+      }}
+    />
+  )
+}
+
+function PerfMonitor() {
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setTick(n => n + 1), 500)
+    return () => clearInterval(id)
+  }, [])
+
+  const { fps, frameMs, nodeCount } = perfStats
+  void tick
+  const fpsColor = fps >= 55 ? '#2ecc71' : fps >= 30 ? '#f1c40f' : '#e74c3c'
+
+  return (
+    <div style={{ background: '#1a1a2e', borderRadius: 4, padding: 10, border: '1px solid #2a2a4a' }}>
       <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>
-        {result.nodeCount} nodes &times; {result.iterations} iterations
+        Performance
       </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+        <span style={{ color: '#888' }}>FPS</span>
+        <span style={{ color: fpsColor, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{fps}</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
+        <span style={{ color: '#888' }}>Frame</span>
+        <span style={{ color: '#ccc', fontVariantNumeric: 'tabular-nums' }}>{frameMs}ms</span>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
+        <span style={{ color: '#888' }}>Nodes</span>
+        <span style={{ color: '#ccc', fontVariantNumeric: 'tabular-nums' }}>{nodeCount}</span>
+      </div>
+    </div>
+  )
+}
 
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-          <span style={{ color: '#e74c3c', fontSize: 12 }}>DOM measurement</span>
-          <span style={{ color: '#e74c3c', fontSize: 12, fontWeight: 600 }}>{result.domMs.toFixed(1)}ms</span>
-        </div>
-        <div style={{ height: 8, background: '#2a2a4a', borderRadius: 4, overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${(result.domMs / barMax) * 100}%`, background: '#e74c3c', borderRadius: 4 }} />
-        </div>
-      </div>
+function ChaosSlider() {
+  const intensity = useStore(s => s.chaosIntensity)
 
-      <div style={{ marginBottom: 10 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-          <span style={{ color: '#2ecc71', fontSize: 12 }}>Pretext total</span>
-          <span style={{ color: '#2ecc71', fontSize: 12, fontWeight: 600 }}>{result.pretextTotalMs.toFixed(1)}ms</span>
-        </div>
-        <div style={{ height: 8, background: '#2a2a4a', borderRadius: 4, overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${(result.pretextTotalMs / barMax) * 100}%`, background: '#2ecc71', borderRadius: 4 }} />
-        </div>
-        <div style={{ display: 'flex', gap: 12, marginTop: 4, fontSize: 11, color: '#888' }}>
-          <span>prepare: {result.pretextPrepareMs.toFixed(1)}ms</span>
-          <span>layout: {result.pretextLayoutMs.toFixed(1)}ms</span>
-        </div>
+  return (
+    <div style={{ background: '#1a1a2e', borderRadius: 4, padding: 10, border: '1px solid #2a2a4a' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
+        <span style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', letterSpacing: 1 }}>
+          Chaos (J)
+        </span>
+        <span style={{ fontSize: 11, color: '#e74c3c', fontWeight: 600 }}>{intensity}</span>
       </div>
-
-      <div style={{
-        textAlign: 'center', padding: '6px 0', borderRadius: 4,
-        background: '#1a3a2a', color: '#2ecc71', fontSize: 13, fontWeight: 600,
-      }}>
-        {result.speedup}x faster
-      </div>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={intensity}
+        onChange={e => useStore.getState().setChaosIntensity(Number(e.target.value))}
+        style={{ width: '100%', accentColor: '#e74c3c' }}
+      />
     </div>
   )
 }
@@ -124,8 +192,6 @@ function InspectorPanel() {
   const selectedNode = selectedNodeId ? nodes[selectedNodeId] : null
   const [localSource, setLocalSource] = useState('')
   const streamIntervalRef = useRef<number | null>(null)
-  const [benchResult, setBenchResult] = useState<BenchmarkResult | null>(null)
-  const [benchRunning, setBenchRunning] = useState(false)
 
   useEffect(() => {
     if (selectedNode) {
@@ -297,31 +363,8 @@ function InspectorPanel() {
         >
           Stream Text
         </button>
-        <button
-          disabled={benchRunning}
-          onClick={() => {
-            setBenchRunning(true)
-            requestAnimationFrame(() => {
-              const allNodes = useStore.getState().nodes
-              const result = runBenchmark(allNodes, 50)
-              setBenchResult(result)
-              setBenchRunning(false)
-            })
-          }}
-          style={{
-            padding: '8px 16px',
-            background: benchRunning ? '#1a1a3a' : '#2a2a5a',
-            color: benchRunning ? '#666' : '#ccc',
-            border: '1px solid #3a3a6a',
-            borderRadius: 4,
-            cursor: benchRunning ? 'wait' : 'pointer',
-            fontFamily: 'Inter, sans-serif',
-            fontSize: 13,
-          }}
-        >
-          {benchRunning ? 'Running...' : 'Run Benchmark'}
-        </button>
-        <BenchmarkPanel result={benchResult} />
+        <PerfMonitor />
+        <ChaosSlider />
       </div>
     </div>
   )
@@ -330,6 +373,7 @@ function InspectorPanel() {
 export function OverlayLayer() {
   const viewport = useStore(s => s.viewport)
   const editingParam = useStore(s => s.editingParam)
+  const editingNodeId = useStore(s => s.editingNodeId)
 
   return (
     <>
@@ -340,10 +384,11 @@ export function OverlayLayer() {
           left: 0,
           transformOrigin: '0 0',
           transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-          pointerEvents: editingParam ? 'auto' : 'none',
+          pointerEvents: (editingParam || editingNodeId) ? 'auto' : 'none',
         }}
       >
         <ParamTextarea />
+        <NodeSourceTextarea />
       </div>
       <InspectorPanel />
     </>

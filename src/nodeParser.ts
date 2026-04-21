@@ -9,10 +9,13 @@ const DIVIDER_RE = /^-{3,}$/
 export function parseNodeSource(source: string): ParsedLine[] {
   return source
     .split('\n')
-    .filter(l => l.trim() !== '')
     .map(line => {
       const trimmed = line.trim()
       let m: RegExpMatchArray | null
+
+      if (trimmed === '') {
+        return { type: 'prose' as const, text: '' }
+      }
 
       if ((m = trimmed.match(HEADER_RE))) {
         return { type: 'header' as const, text: m[1] }
