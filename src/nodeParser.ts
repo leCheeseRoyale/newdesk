@@ -4,6 +4,7 @@ const HEADER_RE = /^#\s+(.+)$/
 const OUTPUT_PORT_RE = /^\[:([^\]>]+)>\]\s*(.*)$/
 const INPUT_PORT_RE = /^\[:([^\]]+)\]\s*(.*)$/
 const PARAM_RE = /^\{param:([^}]+)\}\s*(.*)$/
+const MEDIA_RE = /^!media\s+(.+)$/
 const DIVIDER_RE = /^-{3,}$/
 
 export function parseNodeSource(source: string): ParsedLine[] {
@@ -35,6 +36,9 @@ export function parseNodeSource(source: string): ParsedLine[] {
           text: full,
           paramValue: ci >= 0 ? full.slice(ci + 1).trim() : full,
         }
+      }
+      if ((m = trimmed.match(MEDIA_RE))) {
+        return { type: 'media' as const, text: m[1].trim(), mediaUrl: m[1].trim() }
       }
       if (DIVIDER_RE.test(trimmed)) {
         return { type: 'divider' as const, text: '\u2015'.repeat(13) }

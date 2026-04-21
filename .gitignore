@@ -1,5 +1,8 @@
 node_modules
 dist
 bun.lock
+package-lock.json
 *.local
 PROMPT.md
+.claude
+PROMPT2.md

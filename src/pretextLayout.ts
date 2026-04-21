@@ -169,8 +169,12 @@ export function getNodeLayout(node: NodeData): NodeLayout {
   return layout
 }
 
-export function invalidateLayout(nodeId: string, source: string): void {
-  layoutCache.delete(source)
+export function invalidateLayout(source: string): void {
+  for (const key of layoutCache.keys()) {
+    if (key.endsWith(`::${source}`)) {
+      layoutCache.delete(key)
+    }
+  }
 }
 
 export function getPortWorldPos(
@@ -181,5 +185,9 @@ export function getPortWorldPos(
   const port = layout.ports.find((p) => p.portId === portId)
   if (!port) return null
   return { x: node.x + port.x, y: node.y + port.y }
+}
+
+export function renderHeight(node: NodeData, layout: NodeLayout): number {
+  return Math.max(layout.height, node.minHeight ?? 0)
 }
 

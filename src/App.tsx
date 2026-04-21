@@ -2,142 +2,15 @@ import { useRef, useCallback, useEffect } from 'react'
 import { useStore } from './store'
 import { CanvasLayer } from './CanvasLayer'
 import { OverlayLayer } from './OverlayLayer'
-import { getNodeLayout, getPortWorldPos } from './pretextLayout'
-import { PORT_RADIUS, GRID_SIZE } from './types'
-import { invalidateBitmapCache, renderHeight } from './CanvasLayer'
+import { getNodeLayout } from './pretextLayout'
+import { GRID_SIZE } from './types'
+import { invalidateBitmapCache } from './CanvasLayer'
 import { serializeGraph } from './serializer'
+import { zoomToFit } from './Toolbar'
 import { createNodePhysics, initChaos, initRestore, activeChaos, setActiveChaos } from './physics'
-import type { NodeData, EdgeData, NodeLayout } from './types'
-
-type ResizeMode = 'horizontal' | 'vertical' | 'diagonal'
-
-// ── Hit-testing helpers ──────────────────────────────────────────
-
-function screenToWorld(sx: number, sy: number, viewport: { x: number; y: number; zoom: number }) {
-  return {
-    x: (sx - viewport.x) / viewport.zoom,
-    y: (sy - viewport.y) / viewport.zoom,
-  }
-}
-
-function hitTestPort(
-  wx: number,
-  wy: number,
-  nodes: Record<string, NodeData>,
-): { nodeId: string; portId: string; type: 'input' | 'output' } | null {
-  const threshold = PORT_RADIUS * 2
-  for (const id in nodes) {
-    const node = nodes[id]
-    const layout = getNodeLayout(node)
-    for (const port of layout.ports) {
-      const px = node.x + port.x
-      const py = node.y + port.y
-      const dx = wx - px
-      const dy = wy - py
-      if (dx * dx + dy * dy <= threshold * threshold) {
-        return { nodeId: id, portId: port.portId, type: port.type }
-      }
-    }
-  }
-  return null
-}
-
-function hitTestEditableRegion(
-  wx: number,
-  wy: number,
-  nodes: Record<string, NodeData>,
-): { nodeId: string; paramName: string } | null {
-  for (const id in nodes) {
-    const node = nodes[id]
-    const layout = getNodeLayout(node)
-    for (const region of layout.editableRegions) {
-      const rx = node.x + region.x
-      const ry = node.y + region.y
-      if (wx >= rx && wx <= rx + region.width && wy >= ry && wy <= ry + region.height) {
-        return { nodeId: id, paramName: region.paramName }
-      }
-    }
-  }
-  return null
-}
-
-function hitTestNode(
-  wx: number,
-  wy: number,
-  nodes: Record<string, NodeData>,
-): string | null {
-  for (const id in nodes) {
-    const node = nodes[id]
-    const layout = getNodeLayout(node)
-    const rh = renderHeight(node, layout)
-    if (wx >= node.x && wx <= node.x + layout.width && wy >= node.y && wy <= node.y + rh) {
-      return id
-    }
-  }
-  return null
-}
-
-function hitTestResize(
-  wx: number,
-  wy: number,
-  nodes: Record<string, NodeData>,
-): { nodeId: string; mode: ResizeMode } | null {
-  const zone = 10
-  const corner = 16
-  for (const id in nodes) {
-    const node = nodes[id]
-    const layout = getNodeLayout(node)
-    const rh = renderHeight(node, layout)
-    const leftEdge = node.x
-    const bottom = node.y + rh
-
-    const nearLeft = wx >= leftEdge - zone && wx <= leftEdge + zone && wy >= node.y && wy <= bottom
-    const nearBottom = wy >= bottom - zone && wy <= bottom + zone && wx >= leftEdge && wx <= node.x + layout.width
-    const nearCorner = wx <= leftEdge + corner && wy >= bottom - corner
-
-    if (nearLeft && nearBottom && nearCorner) return { nodeId: id, mode: 'diagonal' }
-    if (nearLeft) return { nodeId: id, mode: 'horizontal' }
-    if (nearBottom) return { nodeId: id, mode: 'vertical' }
-  }
-  return null
-}
-
-function hitTestEdge(
-  wx: number,
-  wy: number,
-  edges: EdgeData[],
-  nodes: Record<string, NodeData>,
-): string | null {
-  const threshold = 10
-  for (const edge of edges) {
-    const fromNode = nodes[edge.fromNode]
-    const toNode = nodes[edge.toNode]
-    if (!fromNode || !toNode) continue
-
-    const fromPos = getPortWorldPos(fromNode, edge.fromPort)
-    const toPos = getPortWorldPos(toNode, edge.toPort)
-    if (!fromPos || !toPos) continue
-
-    // Sample points along a cubic bezier
-    const cpOffset = Math.abs(toPos.x - fromPos.x) * 0.5 + 40
-    const cp1x = fromPos.x + cpOffset
-    const cp1y = fromPos.y
-    const cp2x = toPos.x - cpOffset
-    const cp2y = toPos.y
-
-    for (let t = 0; t <= 1; t += 0.1) {
-      const it = 1 - t
-      const bx = it * it * it * fromPos.x + 3 * it * it * t * cp1x + 3 * it * t * t * cp2x + t * t * t * toPos.x
-      const by = it * it * it * fromPos.y + 3 * it * it * t * cp1y + 3 * it * t * t * cp2y + t * t * t * toPos.y
-      const dx = wx - bx
-      const dy = wy - by
-      if (dx * dx + dy * dy <= threshold * threshold) {
-        return edge.id
-      }
-    }
-  }
-  return null
-}
+import { screenToWorld, hitTestPort, hitTestEditableRegion, hitTestNode, hitTestResize, hitTestEdge } from './hitTesting'
+import type { ResizeMode } from './hitTesting'
+import type { NodeLayout } from './types'
 
 // ── App ──────────────────────────────────────────────────────────
 
@@ -179,9 +52,10 @@ export function App() {
       }
       if ((e.ctrlKey || e.metaKey) && e.code === 'KeyC') {
         const st = useStore.getState()
-        if (st.selectedNodeId && !st.editingParam) {
+        const copyNodeId = st.selectedNodeIds[0]
+        if (copyNodeId && !st.editingParam) {
           e.preventDefault()
-          navigator.clipboard.writeText(st.nodes[st.selectedNodeId].source)
+          navigator.clipboard.writeText(st.nodes[copyNodeId].source)
         }
       }
       if ((e.ctrlKey || e.metaKey) && e.code === 'KeyV') {
@@ -196,6 +70,25 @@ export function App() {
             useStore.getState().addNode(text, cx, cy)
           })
         }
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        const st = useStore.getState()
+        if (st.editingParam || st.editingNodeId) return
+        if (st.selectedNodeIds.length === 0) return
+        st.pushHistory()
+        for (const nid of [...st.selectedNodeIds]) {
+          st.removeNode(nid)
+        }
+      }
+      if (e.key === '(' && e.shiftKey) {
+        e.preventDefault()
+        useStore.getState().toggleDebugPanel()
+      }
+      if (e.code === 'KeyF' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const st = useStore.getState()
+        if (st.editingParam || st.editingNodeId) return
+        e.preventDefault()
+        zoomToFit()
       }
       if (e.code === 'KeyJ' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault()
@@ -322,8 +215,8 @@ export function App() {
       return
     }
 
-    // 4. Nothing hit — deselect
-    store.selectNode(null)
+    // 5. Nothing hit — deselect
+    store.clearSelection()
   }, [getScreenCoords])
 
   const onMouseMove = useCallback((e: React.MouseEvent) => {

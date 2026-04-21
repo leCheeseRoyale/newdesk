@@ -26,11 +26,12 @@ export interface EdgeData {
 }
 
 export interface ParsedLine {
-  type: 'header' | 'input-port' | 'output-port' | 'param' | 'divider' | 'prose'
+  type: 'header' | 'input-port' | 'output-port' | 'param' | 'divider' | 'prose' | 'media'
   text: string
   portId?: string
   paramName?: string
   paramValue?: string
+  mediaUrl?: string
 }
 
 export interface PortLayout {
@@ -55,6 +56,9 @@ export interface DisplayLine {
   lineHeight: number
   isHeader: boolean
   isDivider: boolean
+  isMedia?: boolean
+  mediaUrl?: string
+  mediaHeight?: number
 }
 
 export interface NodeLayout {
@@ -64,4 +68,5 @@ export interface NodeLayout {
   editableRegions: EditableRegion[]
   parsedLines: ParsedLine[]
   displayLines: DisplayLine[]
+  hasMedia: boolean
 }

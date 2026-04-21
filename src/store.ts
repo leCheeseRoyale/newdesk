@@ -24,11 +24,12 @@ interface StoreState {
   nodes: Record<string, NodeData>
   edges: EdgeData[]
   viewport: Viewport
-  selectedNodeId: string | null
+  selectedNodeIds: string[]
   editingParam: EditingParam | null
   editingNodeId: string | null
   draggingEdge: DraggingEdge | null
   chaosIntensity: number
+  showDebugPanel: boolean
   history: Array<{ nodes: Record<string, NodeData>; edges: EdgeData[] }>
   historyIndex: number
 
@@ -38,14 +39,19 @@ interface StoreState {
   updateNodeSource: (id: string, source: string) => void
   addEdge: (fromNode: string, fromPort: string, toNode: string, toPort: string) => void
   removeEdge: (id: string) => void
+  removeNode: (id: string) => void
   selectNode: (id: string | null) => void
+  toggleSelectNode: (id: string) => void
+  clearSelection: () => void
   setEditingParam: (p: EditingParam | null) => void
   setEditingNode: (id: string | null) => void
   addNode: (source: string, x: number, y: number) => void
   setDraggingEdge: (e: DraggingEdge | null) => void
   setChaosIntensity: (v: number) => void
+  toggleDebugPanel: () => void
   setNodePositions: (positions: Record<string, { x: number; y: number }>) => void
   loadGraph: (nodes: Record<string, NodeData>, edges: EdgeData[]) => void
+  setViewport: (vp: Viewport) => void
   panViewport: (dx: number, dy: number) => void
   zoomViewport: (delta: number, cx: number, cy: number) => void
   pushHistory: () => void
@@ -57,11 +63,12 @@ export const useStore = create<StoreState>((set) => ({
   nodes: initialNodes,
   edges: initialEdges,
   viewport: { x: 0, y: 0, zoom: 1 },
-  selectedNodeId: null,
+  selectedNodeIds: [],
   editingParam: null,
   editingNodeId: null,
   draggingEdge: null,
   chaosIntensity: 0,
+  showDebugPanel: false,
   history: [{ nodes: structuredClone(initialNodes), edges: structuredClone(initialEdges) }],
   historyIndex: 0,
 
@@ -118,7 +125,24 @@ export const useStore = create<StoreState>((set) => ({
       edges: state.edges.filter((e) => e.id !== id),
     })),
 
-  selectNode: (id) => set({ selectedNodeId: id }),
+  removeNode: (id) => set((state) => ({
+    nodes: Object.fromEntries(Object.entries(state.nodes).filter(([nid]) => nid !== id)),
+    edges: state.edges.filter(e => e.fromNode !== id && e.toNode !== id),
+    selectedNodeIds: state.selectedNodeIds.filter(nid => nid !== id),
+    editingParam: state.editingParam?.nodeId === id ? null : state.editingParam,
+    editingNodeId: state.editingNodeId === id ? null : state.editingNodeId,
+    draggingEdge: state.draggingEdge?.fromNode === id ? null : state.draggingEdge,
+  })),
+
+  selectNode: (id) => set({ selectedNodeIds: id ? [id] : [] }),
+
+  toggleSelectNode: (id) => set((state) => ({
+    selectedNodeIds: state.selectedNodeIds.includes(id)
+      ? state.selectedNodeIds.filter(nid => nid !== id)
+      : [...state.selectedNodeIds, id],
+  })),
+
+  clearSelection: () => set({ selectedNodeIds: [] }),
 
   setEditingParam: (p) => set({ editingParam: p }),
 
@@ -128,13 +152,15 @@ export const useStore = create<StoreState>((set) => ({
     const id = `n-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     set((state) => ({
       nodes: { ...state.nodes, [id]: { id, source, x, y } },
-      selectedNodeId: id,
+      selectedNodeIds: [id],
     }))
   },
 
   setDraggingEdge: (e) => set({ draggingEdge: e }),
 
   setChaosIntensity: (v) => set({ chaosIntensity: v }),
+
+  toggleDebugPanel: () => set((state) => ({ showDebugPanel: !state.showDebugPanel })),
 
   setNodePositions: (positions) =>
     set((state) => {
@@ -151,11 +177,13 @@ export const useStore = create<StoreState>((set) => ({
     set({
       nodes,
       edges,
-      selectedNodeId: null,
+      selectedNodeIds: [],
       editingParam: null,
       editingNodeId: null,
       draggingEdge: null,
     }),
+
+  setViewport: (vp) => set({ viewport: vp }),
 
   panViewport: (dx, dy) =>
     set((state) => ({
@@ -204,7 +232,7 @@ export const useStore = create<StoreState>((set) => ({
         nodes: structuredClone(snapshot.nodes),
         edges: structuredClone(snapshot.edges),
         historyIndex: newIndex,
-        selectedNodeId: null,
+        selectedNodeIds: [],
         editingParam: null,
       }
     }),
@@ -218,7 +246,7 @@ export const useStore = create<StoreState>((set) => ({
         nodes: structuredClone(snapshot.nodes),
         edges: structuredClone(snapshot.edges),
         historyIndex: newIndex,
-        selectedNodeId: null,
+        selectedNodeIds: [],
         editingParam: null,
       }
     }),

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useStore } from './store'
-import { getNodeLayout, getPortWorldPos } from './pretextLayout'
+import { getNodeLayout, getPortWorldPos, renderHeight } from './pretextLayout'
 import { activeChaos, stepNodePhysics, readPositions, setActiveChaos } from './physics'
 import {
   NODE_FONT,
@@ -10,8 +10,7 @@ import {
   GRID_SIZE,
 } from './types'
 import type { NodeData, NodeLayout } from './types'
-
-export const perfStats = { fps: 0, frameMs: 0, nodeCount: 0 }
+import { perfStats } from './perfStats'
 
 // ── Bitmap cache ────────────────────────────────────────────────
 
@@ -25,10 +24,6 @@ interface CachedBitmap {
 }
 
 const bitmapCache = new Map<string, CachedBitmap>()
-
-export function renderHeight(node: NodeData, layout: NodeLayout): number {
-  return Math.max(layout.height, node.minHeight ?? 0)
-}
 
 function bitmapKey(node: NodeData, layout: NodeLayout): string {
   return `${layout.width}::${node.minHeight ?? 0}::${node.source}`
@@ -334,7 +329,7 @@ export function CanvasLayer() {
           ny + rh < worldTop || ny > worldBottom
         ) continue
 
-        const isSelected = state.selectedNodeId === nodeId
+        const isSelected = state.selectedNodeIds.includes(nodeId)
         const isEditing = state.editingParam?.nodeId === nodeId
         const isEditingNode = editingNodeId === nodeId
 
